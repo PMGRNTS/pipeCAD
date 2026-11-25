@@ -1,0 +1,16 @@
+{
+  "name": "Klamp Studio",
+  "short_name": "Klamp Studio",
+  "description": "Design Kee Klamp-style pipe structures in 3D with automatic fittings and a parts list.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#eef2f7",
+  "theme_color": "#f3f6fa",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
