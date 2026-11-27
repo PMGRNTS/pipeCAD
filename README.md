@@ -20,7 +20,17 @@ A Tinkercad-style 3D designer for **Kee Klamp®-style pipe structures** (tables,
   | Pipe through + 4 branches | **40** Four Socket Cross |
   | End on floor | **61** Flange (or **84** plug / open) |
   | Break in a straight run | **14** Straight Coupling |
+  | Tee or elbow within ±11° of square | **86** Angle Tee / **87** Angle Elbow / **89** Two Socket Angle Cross |
+  | Branch at 45° / 30°–60° to a through pipe | **12** 45° Single Socket Tee / **29** 30°–60° Single Socket Tee |
+  | Two pipe ends at 125°–178° | **55** Obtuse Angle Elbow |
+  | Angled pipe on the floor | **C58** Swivel Flange |
+  | Any other angle | **C50** Single Swivel Socket (swivel joints are shown in brass) |
 
+- **Rotation and angles.**
+  - **Whole structure:** select a joint and choose **Move & rotate**. Drag the three rings to spin or tip the structure (it snaps to 15° by default; change this in Settings). You can also use the 90° and step buttons or type an exact angle. Choose whether it pivots on that joint or on the structure's center, and use **Drop to floor** after tipping it over.
+  - **One pipe:** tap a pipe and drag the rings at its pivot joint to swing it. Everything hanging off that pipe swings with it, and the orange ring spins it around its own axis. You can also type an exact **Tilt** (from vertical) and **Heading**. **Square up** snaps it back to the nearest right angle. If the pipe is part of a closed loop, only its far end moves and the pipes joined there stretch to follow.
+  - **Braces at any angle:** select a joint, tap **Connect to…**, then tap another joint or a spot on a pipe.
+  - Drawing arrows line up with the pipes already at a joint, so you keep building square on a rotated structure.
 - **Editing.** Type a pipe length (`36`, `36-1/2"`, `3' 6"`, `900mm`) or drag the stretch arrows; the rest of the structure stays square. You can also move or duplicate whole structures, add joints on existing pipes, choose which pipe passes through a cross, and undo or redo.
 - **Parts list.** It shows fitting counts with part numbers (for example `21-7`), estimated cut lengths, and how many stock lengths to buy (it packs the cuts onto sticks). You can share it as CSV or copy it as text.
 - **Designs are saved on the device** automatically, with a gallery. You can share or open `.klamp.json` design files, save a PNG picture, or export an STL.
@@ -37,12 +47,12 @@ A Tinkercad-style 3D designer for **Kee Klamp®-style pipe structures** (tables,
 
 There is no build step. All paths are relative, so the app works from a project subfolder. three.js is loaded from the jsDelivr CDN and cached by the service worker for offline use.
 
-**Updating:** when you change files, bump `CACHE` in `sw.js` (for example `klamp-studio-v2`) so installed copies pick up the new version.
+**Updating:** when you change files, bump `CACHE` in `sw.js` (for example `klamp-studio-v3`) so installed copies pick up the new version.
 
 ## Notes
 
 - Cut lengths are estimates. Half the pipe OD is deducted for each end that sits in a socket, and about 6 mm at a flange. Check against your actual fittings before cutting. You can turn the deduction off in Settings to get center-to-center lengths.
-- Only square (90°) structures are supported. Angled and swivel fittings and offset crossovers (Type 45) aren't modelled.
+- For angled joints the app suggests the closest Kee Klamp angle or swivel fitting. Swivel sockets usually clamp a short distance from the joint, so check those joints with your supplier. Offset crossovers (Type 45) aren't modelled.
 - Requires iOS / iPadOS 16.4 or later (or any current desktop browser).
 
 Klamp Studio is an independent tool and is not affiliated with Kee Safety. Kee Klamp® is a registered trademark of Kee Safety Ltd.

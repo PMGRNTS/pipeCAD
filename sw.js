@@ -1,6 +1,6 @@
 // Offline support: app files are served from cache and refreshed in the background;
 // the versioned three.js files from the CDN are cached forever once loaded.
-const CACHE = 'klamp-studio-v1';
+const CACHE = 'klamp-studio-v2';
 const SHELL = [
   './', './index.html', './js/app.js', './js/model.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
