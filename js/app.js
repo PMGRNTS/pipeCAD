@@ -36,6 +36,11 @@ const ICONS = {
   socket: '<circle cx="12" cy="12" r="4"/><path d="M12 2v6M12 16v6M2 12h6"/>',
   edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   logo: '<path d="M4 20V8M4 8h16M20 8v12M4 14h16"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  ccw: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+  swap: '<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 20 4-4-4-4"/><path d="M21 16H7"/>',
+  square: '<path d="M4 20V4M4 20h16"/><path d="M8 20v-4h-4"/>',
+  floor: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M3 20h18"/>',
 };
 const icon = (n) => `<svg class="i" viewBox="0 0 24 24">${ICONS[n] || ''}</svg>`;
 
@@ -56,8 +61,12 @@ let model = M.newModel(guessUnits());
 let undoStack = [], redoStack = [];
 let sel = null; // { t: 'node'|'pipe', id }
 let mode = 'extend'; // node selection: 'extend' (draw) | 'move'
-let tool = 'select'; // 'select' | 'point'
+let tool = 'select'; // 'select' | 'point' | 'connect'
 let labelsOn = false;
+let pivotMode = 'joint'; // rotate structure about: 'joint' | 'center'
+let rotAxis = 'y';
+let pipePivot = null; // node a selected pipe swings about
+let connectFrom = null;
 let preview = null; // model shown while dragging
 let lastCls = new Map(), lastById = new Map();
 let dirty = true;
@@ -117,6 +126,7 @@ const mats = {
   fitHi: new THREE.MeshStandardMaterial({ color: 0xffb27f, metalness: 0.45, roughness: 0.45, emissive: 0xb84a00, emissiveIntensity: 0.25 }),
   screw: new THREE.MeshStandardMaterial({ color: 0x2c3238, metalness: 0.6, roughness: 0.4 }),
   plug: new THREE.MeshStandardMaterial({ color: 0x41474e, metalness: 0.4, roughness: 0.55 }),
+  swivel: new THREE.MeshStandardMaterial({ color: 0xc9a24a, metalness: 0.6, roughness: 0.38 }),
   point: new THREE.MeshStandardMaterial({ color: 0x1f6feb, metalness: 0.1, roughness: 0.5 }),
   marker: new THREE.MeshBasicMaterial({ color: 0x1f6feb, transparent: true, opacity: 0.28, depthWrite: false }),
   hit: new THREE.MeshBasicMaterial({ visible: false }),
@@ -129,6 +139,8 @@ const G = {
   hitCyl: new THREE.CylinderGeometry(1, 1, 1, 8, 1),
   hitSph: new THREE.SphereGeometry(1, 10, 8),
   cone: new THREE.ConeGeometry(0.17, 0.42, 20),
+  ring: new THREE.TorusGeometry(1, 0.016, 8, 96),
+  ringHit: new THREE.TorusGeometry(1, 0.11, 6, 48),
 };
 
 const world = new THREE.Group();
@@ -139,9 +151,12 @@ world.add(gridG, modelG, hitG);
 scene.add(world);
 
 const Yup = new THREE.Vector3(0, 1, 0);
-const vecOf = (d) => new THREE.Vector3(...M.DIRS[d]);
+const Zf = new THREE.Vector3(0, 0, 1);
+const tv = (a) => new THREE.Vector3(a[0], a[1], a[2]);
 const v3 = (n) => new THREE.Vector3(n.x * S, n.y * S, n.z * S);
 const AXIS_COLORS = { x: 0xe5484d, y: 0x2f9e5b, z: 0x1f6feb };
+const colorFor = (v) => { const a = v.map(Math.abs); return AXIS_COLORS['xyz'[a.indexOf(Math.max(...a))]]; };
+const PAR = 0.9995;
 
 function part(group, geom, mat, pos, axis, sx, sy, sz, shadow = true) {
   const m = new THREE.Mesh(geom, mat);
@@ -154,42 +169,53 @@ function part(group, geom, mat, pos, axis, sx, sy, sz, shadow = true) {
 }
 
 // ---------------------------------------------------------------- scene building
-function buildFitting(n, k, R, mat, isSel) {
+function buildFitting(n, k, R, mat, isSel, hiMat) {
   const o = v3(n);
   const sr = R * 1.32, sl = R * 2.1, off = R * 0.35;
-  const perpOf = (v) => (Math.abs(v.y) > 0.5 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0));
+  const perpOf = (v) => {
+    const p = Math.abs(v.y) > 0.7 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+    return p.sub(v.clone().multiplyScalar(p.dot(v))).normalize();
+  };
   const screw = (at, v) => {
     const p = perpOf(v);
     part(modelG, G.cylLo, mats.screw, at.clone().addScaledVector(p, sr * 0.97), p, R * 0.3, R * 0.42, R * 0.3);
   };
-  const socket = (d) => {
-    const v = vecOf(d);
-    part(modelG, G.sleeve, mat, o.clone().addScaledVector(v, off + sl / 2), v, sr, sl, sr);
-    screw(o.clone().addScaledVector(v, off + sl * 0.6), v);
+  const socket = (vec, from = o) => {
+    const v = tv(vec).normalize();
+    part(modelG, G.sleeve, mat, from.clone().addScaledVector(v, off + sl / 2), v, sr, sl, sr);
+    screw(from.clone().addScaledVector(v, off + sl * 0.6), v);
   };
-  const through = (axis, len) => {
-    const v = vecOf('+' + axis);
+  const through = (vec, len) => {
+    const v = tv(vec).normalize();
     part(modelG, G.sleeve, mat, o, v, sr, len, sr);
     screw(o.clone().addScaledVector(v, len * 0.3), v);
     screw(o.clone().addScaledVector(v, -len * 0.3), v);
   };
+  const isThru = (vec) => k.thru && Math.abs(M.vdot(vec, k.thru)) > PAR;
 
   if (k.kind === 'fitting') {
-    if (k.code === '14') { through(k.pairs[0], sl * 2.2); return; }
-    part(modelG, G.sph, mat, o, null, sr * 1.12, sr * 1.12, sr * 1.12);
-    for (const d of k.dirs) if (!(k.thru && d[1] === k.thru)) socket(d);
+    if (k.code === '14') { through(k.vecs[0], sl * 2.2); return; }
+    const hubMat = isSel || hiMat ? mat : k.custom ? mats.swivel : mat;
+    part(modelG, G.sph, hubMat, o, null, sr * 1.12, sr * 1.12, sr * 1.12);
+    for (const vec of k.vecs) if (!isThru(vec)) socket(vec);
     if (k.thru) through(k.thru, (off + sl) * 2);
   } else if (k.kind === 'flange') {
     const t = R * 0.36;
     part(modelG, G.cyl, mat, o.clone().add(new THREE.Vector3(0, t / 2, 0)), Yup, R * 3.1, t, R * 3.1);
-    part(modelG, G.sleeve, mat, o.clone().add(new THREE.Vector3(0, t + sl / 2, 0)), Yup, sr, sl, sr);
-    screw(o.clone().add(new THREE.Vector3(0, t + sl * 0.6, 0)), Yup);
     for (let i = 0; i < 4; i++) {
       const a = Math.PI / 4 + (i * Math.PI) / 2;
       part(modelG, G.cylLo, mats.screw, o.clone().add(new THREE.Vector3(Math.cos(a) * R * 2.3, t + R * 0.02, Math.sin(a) * R * 2.3)), Yup, R * 0.32, R * 0.06, R * 0.32, false);
     }
+    if (k.code === 'C58') {
+      const knuckle = o.clone().add(new THREE.Vector3(0, t + sr * 0.7, 0));
+      part(modelG, G.sph, isSel ? mat : mats.swivel, knuckle, null, sr, sr, sr);
+      socket(k.vecs[0], knuckle);
+    } else {
+      part(modelG, G.sleeve, mat, o.clone().add(new THREE.Vector3(0, t + sl / 2, 0)), Yup, sr, sl, sr);
+      screw(o.clone().add(new THREE.Vector3(0, t + sl * 0.6, 0)), Yup);
+    }
   } else if (k.kind === 'plug') {
-    const v = vecOf(k.dirs[0]).negate();
+    const v = tv(k.vecs[0]).negate();
     part(modelG, G.cyl, mats.plug, o.clone().addScaledVector(v, R * 0.1), v, R * 1.07, R * 0.22, R * 1.07);
     part(modelG, G.sph, mats.plug, o.clone().addScaledVector(v, R * 0.2), v, R * 1.0, R * 0.32, R * 1.0);
   } else if (k.kind === 'point') {
@@ -200,6 +226,18 @@ function buildFitting(n, k, R, mat, isSel) {
   }
 }
 
+function highlightSet(m, byId) {
+  if (preview || !sel) return null;
+  if (sel.t === 'node' && mode === 'move' && byId.has(sel.id)) return M.componentOf(m, sel.id);
+  if (sel.t === 'pipe') {
+    const p = m.pipes.find((q) => q.id === sel.id);
+    if (!p) return null;
+    const ids = M.swingSet(m, p.id, pipePivotOf(p)).ids;
+    return ids.size > 1 ? ids : null;
+  }
+  return null;
+}
+
 function rebuild() {
   const m = preview || model;
   modelG.clear();
@@ -207,8 +245,7 @@ function rebuild() {
   const { byId, cls } = M.classifyAll(m);
   lastCls = cls; lastById = byId;
   const R = (M.SIZES[m.settings.size] || M.SIZES['7']).od / 2 * S;
-  let hl = null;
-  if (!preview && sel?.t === 'node' && mode === 'move' && byId.has(sel.id)) hl = M.componentOf(m, sel.id);
+  const hl = highlightSet(m, byId);
 
   for (const p of m.pipes) {
     const A = byId.get(p.a), B = byId.get(p.b);
@@ -218,7 +255,8 @@ function rebuild() {
     const mid = a.clone().add(b).multiplyScalar(0.5);
     const axis = b.clone().sub(a).normalize();
     const isSel = !preview && sel?.t === 'pipe' && sel.id === p.id;
-    const mat = isSel ? mats.pipeSel : hl && hl.has(p.a) ? mats.pipeHi : mats.pipe;
+    const inHl = hl && hl.has(p.a) && hl.has(p.b);
+    const mat = isSel ? mats.pipeSel : inHl ? mats.pipeHi : mats.pipe;
     part(modelG, G.cyl, mat, mid, axis, R, len, R).userData = { t: 'pipe', id: p.id };
     const h = part(hitG, G.hitCyl, mats.hit, mid, axis, Math.max(R * 2.4, 0.028), Math.max(len - R * 6, len * 0.4), Math.max(R * 2.4, 0.028), false);
     h.userData = { t: 'pipe', id: p.id };
@@ -226,8 +264,9 @@ function rebuild() {
   for (const n of m.nodes) {
     const k = cls.get(n.id);
     const isSel = !preview && sel?.t === 'node' && sel.id === n.id;
-    const mat = isSel ? mats.fitSel : hl && hl.has(n.id) ? mats.fitHi : mats.fit;
-    buildFitting(n, k, R, mat, isSel);
+    const inHl = hl && hl.has(n.id);
+    const mat = isSel ? mats.fitSel : inHl ? mats.fitHi : mats.fit;
+    buildFitting(n, k, R, mat, isSel, inHl);
     const h = part(hitG, G.hitSph, mats.hit, v3(n), null, Math.max(R * 3, 0.034), Math.max(R * 3, 0.034), Math.max(R * 3, 0.034), false);
     h.userData = { t: 'node', id: n.id };
   }
@@ -301,11 +340,10 @@ function updateSun(m) {
   sc.updateProjectionMatrix();
 }
 
-// ---------------------------------------------------------------- gizmo (arrows)
+// ---------------------------------------------------------------- gizmo (arrows & rotation rings)
 const gizmo = new THREE.Group();
 scene.add(gizmo);
-const arrows = [];
-for (let i = 0; i < 6; i++) {
+function makeArrow() {
   const g = new THREE.Group();
   const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.95 });
   const shaft = new THREE.Mesh(G.cylLo, mat); shaft.scale.set(0.05, 0.62, 0.05); shaft.position.y = 0.31;
@@ -316,54 +354,105 @@ for (let i = 0; i < 6; i++) {
   g.userData = { hit, mat, data: null };
   g.visible = false;
   gizmo.add(g);
-  arrows.push(g);
+  return g;
 }
+function makeRing() {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.85 });
+  const ring = new THREE.Mesh(G.ring, mat);
+  const knob = new THREE.Mesh(G.sph, mat); knob.scale.setScalar(0.075); knob.position.set(Math.SQRT1_2, Math.SQRT1_2, 0);
+  const knob2 = knob.clone(); knob2.position.set(-Math.SQRT1_2, -Math.SQRT1_2, 0);
+  const hit = new THREE.Mesh(G.ringHit, mats.hit);
+  ring.renderOrder = knob.renderOrder = knob2.renderOrder = 9;
+  g.add(ring, knob, knob2, hit);
+  g.userData = { hit, mat, data: null };
+  g.visible = false;
+  gizmo.add(g);
+  return g;
+}
+const arrows = Array.from({ length: 6 }, makeArrow);
+const rings = Array.from({ length: 3 }, makeRing);
+const handles = [...arrows, ...rings];
+
+const pipePivotOf = (p) => (pipePivot === p.a || pipePivot === p.b ? pipePivot : M.anchorEnd(model, p.id));
 
 function updateGizmo() {
-  arrows.forEach((a) => { a.visible = false; a.userData.data = null; });
+  handles.forEach((h) => { h.visible = false; h.userData.data = null; });
   if (!sel || drag || preview) return;
-  const byId = new Map(model.nodes.map((n) => [n.id, n]));
-  let i = 0;
-  const set = (data, color) => {
-    const a = arrows[i++];
-    a.visible = true;
-    a.userData.data = data;
-    a.userData.mat.color.setHex(color);
+  const { byId, adj } = M.buildAdj(model);
+  let ai = 0, ri = 0;
+  const put = (list, i, data) => {
+    const h = list[i];
+    if (!h) return;
+    h.visible = true;
+    h.userData.data = data;
+    h.userData.mat.color.setHex(data.color);
   };
+  const arrow = (data) => put(arrows, ai++, data);
+  const ring = (data) => put(rings, ri++, data);
   if (sel.t === 'node') {
     const n = byId.get(sel.id);
     if (!n) return;
-    const k = lastCls.get(n.id);
-    for (const d of Object.keys(M.DIRS)) {
-      if (mode === 'extend' && k && k.dirs.includes(d)) continue;
-      set({ action: mode, dir: d, nodeId: n.id, origin: [n.x, n.y, n.z] }, AXIS_COLORS[d[1]]);
+    const o = M.P(n);
+    if (mode === 'extend') {
+      const k = lastCls.get(n.id);
+      for (const ax of M.nodeFrame(model, n.id, adj)) {
+        for (const sg of [1, -1]) {
+          const v = M.vscale(ax, sg);
+          if (k && k.vecs.some((q) => M.vdot(q, v) > PAR)) continue;
+          arrow({ action: 'extend', vec: v, nodeId: n.id, origin: o, color: colorFor(v) });
+        }
+      }
+    } else {
+      const comp = M.componentOf(model, n.id);
+      const piv = pivotMode === 'center' ? M.centerOf(model, comp) : o;
+      for (const v of Object.values(M.DIRS)) arrow({ action: 'move', vec: v, nodeId: n.id, origin: o, color: colorFor(v) });
+      for (const ax of [[0, 1, 0], [1, 0, 0], [0, 0, 1]]) ring({ action: 'rotate', scope: 'struct', axis: ax, pivot: piv, nodeId: n.id, color: colorFor(ax) });
     }
   } else if (sel.t === 'pipe') {
     const p = model.pipes.find((q) => q.id === sel.id);
     if (!p) return;
     const A = byId.get(p.a), B = byId.get(p.b);
-    const ax = M.axisIndex(A, B);
-    const name = M.AXES[ax];
-    const cA = M.P(A)[ax], cB = M.P(B)[ax];
-    set({ action: 'stretch', dir: (cA > cB ? '+' : '-') + name, nodeId: A.id, pipeId: p.id, origin: M.P(A) }, 0xff6a13);
-    set({ action: 'stretch', dir: (cB > cA ? '+' : '-') + name, nodeId: B.id, pipeId: p.id, origin: M.P(B) }, 0xff6a13);
+    const u = M.pipeDir(A, B);
+    arrow({ action: 'stretch', vec: M.vscale(u, -1), nodeId: A.id, pipeId: p.id, origin: M.P(A), color: 0xff6a13 });
+    arrow({ action: 'stretch', vec: u, nodeId: B.id, pipeId: p.id, origin: M.P(B), color: 0xff6a13 });
+    const pivId = pipePivotOf(p);
+    const pivN = byId.get(pivId), far = pivId === p.a ? B : A;
+    const d = M.pipeDir(pivN, far);
+    const frame = M.nodeFrame(model, pivId, adj).slice().sort((a, b) => Math.abs(M.vdot(a, d)) - Math.abs(M.vdot(b, d)));
+    const a1 = M.vnorm(M.vsub(frame[0], M.vscale(d, M.vdot(frame[0], d))));
+    const a2 = M.vcross(d, a1);
+    const base = { action: 'rotate', scope: 'pipe', pivot: M.P(pivN), pipeId: p.id, pivotId: pivId };
+    ring({ ...base, axis: a1, color: colorFor(a1) });
+    ring({ ...base, axis: a2, color: colorFor(a2) });
+    if (!M.swingSet(model, p.id, pivId).loop) ring({ ...base, axis: d, color: 0xff6a13, spin: true });
   }
   dirty = true;
 }
 
 const tmpV = new THREE.Vector3();
+function handleScale(origin) {
+  tmpV.set(origin[0] * S, origin[1] * S, origin[2] * S);
+  return camera.position.distanceTo(tmpV) * (innerHeight > innerWidth ? 0.095 : 0.075);
+}
 function updateGizmoScale() {
   const R = sizeInfo().od / 2 * S;
-  const portrait = innerHeight > innerWidth;
   for (const a of arrows) {
     if (!a.visible) continue;
     const d = a.userData.data;
-    tmpV.set(d.origin[0] * S, d.origin[1] * S, d.origin[2] * S);
-    const s = camera.position.distanceTo(tmpV) * (portrait ? 0.095 : 0.075);
-    const v = vecOf(d.dir);
+    const s = handleScale(d.origin);
+    const v = tv(d.vec).normalize();
     a.scale.setScalar(s);
-    a.position.copy(tmpV).addScaledVector(v, R * 2.6 + s * 0.06);
+    a.position.set(d.origin[0] * S, d.origin[1] * S, d.origin[2] * S).addScaledVector(v, R * 2.6 + s * 0.06);
     a.quaternion.setFromUnitVectors(Yup, v);
+  }
+  for (const r of rings) {
+    if (!r.visible) continue;
+    const d = r.userData.data;
+    const s = handleScale(d.pivot) * (d.spin ? 0.62 : 1.25);
+    r.scale.setScalar(s);
+    r.position.set(d.pivot[0] * S, d.pivot[1] * S, d.pivot[2] * S);
+    r.quaternion.setFromUnitVectors(Zf, tv(d.axis).normalize());
   }
 }
 
@@ -391,7 +480,7 @@ function buildLabels(m) {
     for (const p of m.pipes) pipeLbl(p);
     for (const n of m.nodes) {
       const k = lastCls.get(n.id);
-      if (k?.code) add(`${k.code}-${m.settings.size}`, v3(n), 'f');
+      if (k?.code) add(`${k.code}${k.extras?.length ? '+C50' : ''}`, v3(n), 'f');
     }
   } else if (!preview && sel?.t === 'pipe') {
     const p = m.pipes.find((q) => q.id === sel.id);
@@ -492,33 +581,58 @@ function lineParam(origin, dir, ray) {
   if (den < 0.002) return null;
   return (b * e - d) / den;
 }
+// Angle of the pointer around a rotation ring (null when the ring is seen edge-on).
+function ringAngle(dr, ray) {
+  if (Math.abs(ray.direction.dot(dr.axis)) < 0.12) return null;
+  const pt = ray.intersectPlane(dr.plane, new THREE.Vector3());
+  if (!pt) return null;
+  const r = pt.sub(dr.pivot);
+  return Math.atan2(r.dot(dr.w), r.dot(dr.u));
+}
 
 function onPointerDown(e) {
   pointers.add(e.pointerId);
   if (pointers.size > 1) { down = null; if (drag) cancelDrag(); return; }
   down = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false, id: e.pointerId };
-  const vis = arrows.filter((a) => a.visible);
+  const vis = handles.filter((a) => a.visible);
   if (!vis.length) return;
   updateGizmoScale();
   gizmo.updateMatrixWorld(true);
   setRay(e);
   const hits = raycaster.intersectObjects(vis.map((a) => a.userData.hit), false);
   if (!hits.length) return;
-  const arrow = hits[0].object.parent;
-  const d = arrow.userData.data;
+  const handle = hits[0].object.parent;
+  const d = handle.userData.data;
   e.stopImmediatePropagation();
   controls.enabled = false;
   try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-  const origin = new THREE.Vector3(...d.origin).multiplyScalar(S);
-  const dir = vecOf(d.dir);
-  const dist = camera.position.distanceTo(origin);
-  drag = {
-    d, origin, dir, pointerId: e.pointerId, moved: false, delta: 0,
-    s0: lineParam(origin, dir, raycaster.ray), x0: e.clientX, y0: e.clientY,
-    pxToM: (dist * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / innerHeight,
-    comp: d.action === 'move' ? M.componentOf(model, d.nodeId) : null,
-  };
-  arrows.forEach((a) => { if (a !== arrow) a.visible = false; });
+  const base = { d, pointerId: e.pointerId, moved: false, delta: 0, x0: e.clientX, y0: e.clientY };
+  if (d.action === 'rotate') {
+    const pivot = tv(d.pivot).multiplyScalar(S);
+    const axis = tv(d.axis).normalize();
+    const u = tv(M.anyPerp(d.axis));
+    const dr = { ...base, rotate: true, pivot, axis, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(axis, pivot), radius: handle.scale.x };
+    const hp = hits[0].point.clone().sub(pivot);
+    hp.addScaledVector(axis, -hp.dot(axis));
+    dr.u = hp.lengthSq() > 1e-10 ? hp.normalize() : u;
+    dr.w = axis.clone().cross(dr.u);
+    dr.last = ringAngle(dr, raycaster.ray);
+    dr.edge = dr.last == null;
+    dr.acc = 0;
+    dr.ids = d.scope === 'struct' ? M.componentOf(model, d.nodeId) : M.swingSet(model, d.pipeId, d.pivotId).ids;
+    drag = dr;
+  } else {
+    const origin = tv(d.origin).multiplyScalar(S);
+    const dir = tv(d.vec).normalize();
+    const dist = camera.position.distanceTo(origin);
+    drag = {
+      ...base, origin, dir,
+      s0: lineParam(origin, dir, raycaster.ray),
+      pxToM: (dist * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / innerHeight,
+      comp: d.action === 'move' ? M.componentOf(model, d.nodeId) : null,
+    };
+  }
+  handles.forEach((a) => { if (a !== handle) a.visible = false; });
   dirty = true;
 }
 
@@ -528,6 +642,26 @@ function onPointerMove(e) {
   if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
   drag.moved = true;
   setRay(e);
+  if (drag.rotate) {
+    let total;
+    if (drag.edge) total = (e.clientX - drag.x0) * 0.012;
+    else {
+      const a = ringAngle(drag, raycaster.ray);
+      if (a == null) return;
+      let da = a - drag.last;
+      if (da > Math.PI) da -= 2 * Math.PI;
+      if (da < -Math.PI) da += 2 * Math.PI;
+      drag.acc += da;
+      drag.last = a;
+      total = drag.acc;
+    }
+    const step = M.rad(model.settings.angleSnap || 15);
+    const ang = Math.round(total / step) * step;
+    if (Math.abs(ang - drag.delta) < 1e-9 && preview) return;
+    drag.delta = ang;
+    applyDragPreview();
+    return;
+  }
   const s = drag.s0 != null ? lineParam(drag.origin, drag.dir, raycaster.ray) : null;
   const meters = s != null ? s - drag.s0 : (drag.y0 - e.clientY) * drag.pxToM;
   const snap = model.settings.snap || 1;
@@ -537,21 +671,26 @@ function onPointerMove(e) {
   applyDragPreview();
 }
 
+const fmtDeg = (r) => `${Math.round(M.deg(r) * 10) / 10}°`;
+
 function applyDragPreview() {
   const d = drag.d;
   const m = M.clone(model);
-  const tip = drag.origin.clone();
-  let text = '';
-  if (d.action === 'extend') {
+  let tip, text = '';
+  if (drag.rotate) {
+    if (drag.delta === 0) preview = null;
+    else { M.rotateNodes(m, drag.ids, d.pivot, d.axis, drag.delta); preview = m; }
+    tip = drag.pivot.clone().add(drag.u.clone().applyAxisAngle(drag.axis, drag.delta).multiplyScalar(drag.radius));
+    text = (drag.delta > 0 ? '+' : '') + fmtDeg(drag.delta);
+  } else if (d.action === 'extend') {
     const len = Math.max(0, drag.delta);
-    if (len > 0) { drag.result = M.extend(m, d.nodeId, d.dir, len); preview = m; } else { preview = null; drag.result = null; }
-    tip.addScaledVector(drag.dir, len * S);
+    if (len > 0) { drag.result = M.extend(m, d.nodeId, d.vec, len); preview = m; } else { preview = null; drag.result = null; }
+    tip = drag.origin.clone().addScaledVector(drag.dir, len * S);
     text = fmt(len);
   } else if (d.action === 'move') {
-    const v = M.DIRS[d.dir];
-    M.translate(m, drag.comp, v.map((x) => x * drag.delta));
+    M.translate(m, drag.comp, M.vscale(d.vec, drag.delta));
     preview = m;
-    tip.addScaledVector(drag.dir, drag.delta * S);
+    tip = drag.origin.clone().addScaledVector(drag.dir, drag.delta * S);
     text = (drag.delta > 0 ? '+' : '') + fmt(drag.delta);
   } else if (d.action === 'stretch') {
     const p = model.pipes.find((q) => q.id === d.pipeId);
@@ -560,11 +699,19 @@ function applyDragPreview() {
     const next = Math.max(snap, cur + drag.delta);
     M.stretchPipe(m, d.pipeId, d.nodeId, next - cur, snap);
     preview = m;
-    tip.addScaledVector(drag.dir, (next - cur) * S);
+    tip = drag.origin.clone().addScaledVector(drag.dir, (next - cur) * S);
     text = fmt(next);
   }
   rebuild();
   showDragLabel(text, tip);
+}
+
+// Where a node ends up after the struct rotation, so it can stay selected.
+function selectAfterRotate(next, d, ang) {
+  if (d.scope !== 'struct') return sel;
+  const p = M.vadd(d.pivot, M.rotVec(M.vsub(d.origin || d.pivot, d.pivot), M.vnorm(d.axis), ang));
+  const n = M.findNodeAt(next, ...p);
+  return n ? { t: 'node', id: n.id } : sel;
 }
 
 function finishDrag() {
@@ -574,16 +721,22 @@ function finishDrag() {
   controls.enabled = true;
   hideDragLabel();
   let next = null, newSel = sel;
-  if (!moved) {
+  if (drag.rotate) {
+    const ang = moved ? drag.delta : M.rad(s.angleSnap || 15);
+    if (ang !== 0) {
+      next = moved && preview ? preview : M.clone(model);
+      if (!(moved && preview)) M.rotateNodes(next, drag.ids, d.pivot, d.axis, ang);
+      const nodeNow = sel?.t === 'node' ? model.nodes.find((n) => n.id === sel.id) : null;
+      newSel = selectAfterRotate(next, { ...d, origin: nodeNow ? M.P(nodeNow) : null }, ang);
+    }
+  } else if (!moved) {
     next = M.clone(model);
     if (d.action === 'extend') {
-      const end = M.extend(next, d.nodeId, d.dir, s.defaultLen);
+      const end = M.extend(next, d.nodeId, d.vec, s.defaultLen);
       newSel = end ? { t: 'node', id: end } : sel;
     } else if (d.action === 'move') {
-      const v = M.DIRS[d.dir];
-      M.translate(next, M.componentOf(next, d.nodeId), v.map((x) => x * s.snap));
-      const o = d.origin;
-      const n = M.findNodeAt(next, o[0] + v[0] * s.snap, o[1] + v[1] * s.snap, o[2] + v[2] * s.snap);
+      M.translate(next, M.componentOf(next, d.nodeId), M.vscale(d.vec, s.snap));
+      const n = M.findNodeAt(next, ...M.vadd(d.origin, M.vscale(d.vec, s.snap)));
       newSel = n ? { t: 'node', id: n.id } : null;
     } else {
       M.stretchPipe(next, d.pipeId, d.nodeId, s.snap, s.snap);
@@ -592,8 +745,7 @@ function finishDrag() {
     next = preview;
     if (d.action === 'extend' && drag.result) newSel = { t: 'node', id: drag.result };
     if (d.action === 'move') {
-      const v = M.DIRS[d.dir], o = d.origin;
-      const n = M.findNodeAt(next, o[0] + v[0] * drag.delta, o[1] + v[1] * drag.delta, o[2] + v[2] * drag.delta);
+      const n = M.findNodeAt(next, ...M.vadd(d.origin, M.vscale(d.vec, drag.delta)));
       newSel = n ? { t: 'node', id: n.id } : null;
     }
   }
@@ -627,14 +779,41 @@ function handleTap(e) {
   world.updateMatrixWorld(true);
   const hits = raycaster.intersectObjects(hitG.children, false);
   const s = model.settings;
+  let ud = null;
   if (hits.length) {
     let h = hits[0];
     const nh = hits.find((x) => x.object.userData.t === 'node' && x.distance < h.distance + 0.06);
     if (nh) h = nh;
-    const ud = h.object.userData;
-    if (tool === 'point' && ud.t === 'pipe') { addJointOnPipe(ud.id); return; }
+    ud = h.object.userData;
+  }
+  if (tool === 'connect') {
+    if (!ud) { toast('Tap a joint or a pipe to connect to'); return; }
+    const m = M.clone(model);
+    const target = ud.t === 'node' ? ud.id : jointOnPipe(m, ud.id);
+    if (target == null || target === connectFrom) { toast('Pick a different joint'); return; }
+    const from = connectFrom;
+    setTool('select');
+    if (!M.connect(m, from, target)) { toast('Those joints are already connected'); return; }
+    const p = m.pipes.find((q) => (q.a === from && q.b === target) || (q.a === target && q.b === from));
+    sel = p ? { t: 'pipe', id: p.id } : { t: 'node', id: target };
+    commit(m);
+    toast('Connected — fittings updated for the angle');
+    return;
+  }
+  if (ud) {
+    if (tool === 'point' && ud.t === 'pipe') {
+      const m = M.clone(model);
+      const id = jointOnPipe(m, ud.id);
+      setTool('select');
+      mode = 'extend';
+      sel = id != null ? { t: 'node', id } : null;
+      commit(m);
+      toast('Joint added — tap an arrow to branch off');
+      return;
+    }
     if (tool === 'point') setTool('select');
     if (ud.t === 'node' && !(sel?.t === 'node' && sel.id === ud.id)) mode = 'extend';
+    if (ud.t === 'pipe' && !(sel?.t === 'pipe' && sel.id === ud.id)) pipePivot = null;
     select(ud.t, ud.id);
     return;
   }
@@ -654,28 +833,23 @@ function handleTap(e) {
   select(null);
 }
 
-function addJointOnPipe(pipeId) {
-  const p = model.pipes.find((q) => q.id === pipeId);
-  const byId = new Map(model.nodes.map((n) => [n.id, n]));
+// Adds a joint on a pipe where the current ray points (snapped). Returns the node id in m.
+function jointOnPipe(m, pipeId) {
+  const p = m.pipes.find((q) => q.id === pipeId);
+  const byId = new Map(m.nodes.map((n) => [n.id, n]));
   const A = byId.get(p.a), B = byId.get(p.b);
   const a = v3(A), dir = v3(B).sub(a);
   const len = dir.length();
   dir.normalize();
   const s = lineParam(a, dir, raycaster.ray);
-  const snap = model.settings.snap;
-  let mm = Math.round(((s ?? len / 2) / S) / snap) * snap;
-  setTool('select');
-  mode = 'extend';
-  if (mm <= 0) { select('node', A.id); return; }
-  if (mm >= len / S - 0.01) { select('node', B.id); return; }
-  const m = M.clone(model);
+  const snap = m.settings.snap;
+  const mm = Math.round(((s ?? len / 2) / S) / snap) * snap;
+  if (mm <= 0) return A.id;
+  if (mm >= len / S - 0.01) return B.id;
   const pt = [A.x + dir.x * mm, A.y + dir.y * mm, A.z + dir.z * mm];
   M.addNode(m, ...pt);
   M.normalize(m);
-  const n = M.findNodeAt(m, ...pt);
-  sel = n ? { t: 'node', id: n.id } : null;
-  commit(m);
-  toast('Joint added — tap an arrow to branch off');
+  return M.findNodeAt(m, ...pt)?.id ?? null;
 }
 
 // ---------------------------------------------------------------- commands
@@ -738,18 +912,36 @@ function setTool(t) {
     rebuild();
     renderPanel();
     toast('Tap the workplane to start a pipe, or tap a pipe to add a joint', 3200);
+  } else if (t === 'connect') {
+    connectFrom = sel?.t === 'node' ? sel.id : null;
+    toast('Now tap the joint (or a point on a pipe) to connect to', 3600);
+    renderPanel();
+  } else {
+    connectFrom = null;
   }
   updateEmpty();
 }
 
 // ---------------------------------------------------------------- panel
 const LEN_PRESETS = { in: [6, 12, 18, 24, 30, 36, 48, 60, 72].map((x) => x * 25.4), mm: [100, 150, 250, 300, 500, 750, 1000, 1500] };
+const WORLD_AXES = { y: [0, 1, 0], x: [1, 0, 0], z: [0, 0, 1] };
 
-function fittingInfo(k, n) {
+function axisName(v) {
+  if (Math.abs(v[1]) > PAR) return 'vertical';
+  if (Math.abs(v[0]) > PAR) return 'X';
+  if (Math.abs(v[2]) > PAR) return 'Z';
+  return `${Math.round(M.tiltHeading(v[1] < 0 ? M.vscale(v, -1) : v).heading)}°`;
+}
+
+function fittingInfo(k) {
   const z = model.settings.size;
   if (k.code) {
     const f = M.FITTINGS[k.code];
-    return { badge: k.code, cls: '', title: `Type ${k.code}-${z} · ${f.name}`, sub: f.use };
+    let sub = f.use;
+    if (k.note) sub += ' ' + k.note;
+    for (const e of k.extras || []) sub += ` Plus ${e.qty} × ${M.partNo(e.code, z)} ${M.FITTINGS[e.code].name}.`;
+    const badge = k.extras?.length ? `${k.code}+` : k.code;
+    return { badge, cls: k.custom ? 'swivel' : '', title: `Type ${M.partNo(k.code, z)} · ${f.name}`, sub };
   }
   if (k.kind === 'point') return { badge: '+', cls: 'blue', title: 'Start point', sub: 'Tap an arrow to add a pipe, or drag it to set the length.' };
   if (k.kind === 'inline') return { badge: '—', cls: 'gray', title: 'Point on a pipe', sub: 'The pipe runs straight through here. Branch off with an arrow.' };
@@ -762,41 +954,61 @@ function renderPanel() {
   if (!sel) { el.classList.add('hidden'); return; }
   const s = model.settings, u = s.units;
   const byId = new Map(model.nodes.map((n) => [n.id, n]));
+  const aSnap = s.angleSnap || 15;
   let html = '';
   if (sel.t === 'node') {
     const n = byId.get(sel.id);
     const k = lastCls.get(sel.id);
     if (!n || !k) { el.classList.add('hidden'); return; }
-    const fi = fittingInfo(k, n);
+    const fi = fittingInfo(k);
     html += `<div class="ph"><div class="badge ${fi.cls}">${esc(fi.badge)}</div><div class="grow"><h3>${esc(fi.title)}</h3><p>${esc(fi.sub)}</p></div><button class="round" data-a="close" aria-label="Close">${icon('x')}</button></div>`;
-    html += `<div class="row"><div class="seg"><button data-a="mode-extend" class="${mode === 'extend' ? 'on' : ''}">Draw</button><button data-a="mode-move" class="${mode === 'move' ? 'on' : ''}">Move</button></div>
+    html += `<div class="row"><div class="seg"><button data-a="mode-extend" class="${mode === 'extend' ? 'on' : ''}">Draw</button><button data-a="mode-move" class="${mode === 'move' ? 'on' : ''}">Move &amp; rotate</button></div>
       <div class="xyz"><span class="x"><b>X</b>${fmt(n.x)}</span><span class="y"><b>Y</b>${fmt(n.y)}</span><span class="z"><b>Z</b>${fmt(n.z)}</span></div></div>`;
-    if (mode === 'extend') {
+    if (tool === 'connect') {
+      html += `<div class="row"><button class="chip on" data-a="connect-cancel">${icon('x')}Cancel connect</button></div><div class="hint">Tap another joint, or a spot on a pipe, to run a straight pipe to it at whatever angle it takes.</div>`;
+    } else if (mode === 'extend') {
       html += `<div class="row scroll">${LEN_PRESETS[u].map((v) => `<button class="chip ${Math.abs(v - s.defaultLen) < 0.01 ? 'on' : ''}" data-a="len" data-v="${v}">${fmt(v)}</button>`).join('')}
         <button class="chip ${LEN_PRESETS[u].some((v) => Math.abs(v - s.defaultLen) < 0.01) ? '' : 'on'}" data-a="len-custom">${LEN_PRESETS[u].some((v) => Math.abs(v - s.defaultLen) < 0.01) ? 'Custom…' : fmt(s.defaultLen)}</button></div>`;
-      const acts = [];
-      if (k.thruOptions.length) acts.push(`<button class="chip" data-a="thru">${icon('rotate')}Through pipe: ${k.thru.toUpperCase()}</button>`);
+      const acts = [`<button class="chip" data-a="connect">${icon('link')}Connect to…</button>`];
+      if (k.thruOptions.length) acts.push(`<button class="chip" data-a="thru">${icon('rotate')}Through pipe: ${axisName(k.thru)}</button>`);
       if (k.canSplit && k.n === 3) acts.push(`<button class="chip" data-a="split">${icon('socket')}${n.split ? 'Use Type 10 (pipe passes through)' : 'Use Type 25 (all sockets)'}</button>`);
       if (k.canSplit && k.n === 2) acts.push(`<button class="chip" data-a="split">${icon('socket')}${n.split ? 'Remove coupling' : 'Break pipe here (Type 14)'}</button>`);
-      if (k.n === 2 && k.pairs.length === 1) acts.push(`<button class="chip" data-a="merge">${icon('merge')}Remove point</button>`);
+      if (k.kind === 'inline' || (k.n === 2 && k.pairs.length === 1)) acts.push(`<button class="chip" data-a="merge">${icon('merge')}Remove point</button>`);
       acts.push(`<button class="chip danger" data-a="del-node">${icon('trash')}Delete joint</button>`);
       html += `<div class="row scroll">${acts.join('')}</div>`;
-      html += `<div class="hint">Tap an arrow to add ${fmt(s.defaultLen)} of pipe. Drag an arrow for any length (snaps to ${fmt(s.snap)}).</div>`;
+      html += `<div class="hint">Tap an arrow to add ${fmt(s.defaultLen)} of pipe; drag for any length. Arrows line up with the pipes already at this joint.</div>`;
     } else {
-      html += `<div class="row scroll"><button class="chip" data-a="dup">${icon('copy')}Duplicate</button><button class="chip danger" data-a="del-comp">${icon('trash')}Delete structure</button></div>`;
-      html += `<div class="hint">Drag an arrow to move the whole connected structure (highlighted). Tap an arrow to nudge ${fmt(s.snap)}.</div>`;
+      html += `<div class="row"><span class="lab">Pivot</span><div class="seg"><button data-a="pivot-joint" class="${pivotMode === 'joint' ? 'on' : ''}">This joint</button><button data-a="pivot-center" class="${pivotMode === 'center' ? 'on' : ''}">Center</button></div></div>`;
+      html += `<div class="row scroll"><div class="seg"><button data-a="rax" data-v="y" class="${rotAxis === 'y' ? 'on' : ''}">Spin</button><button data-a="rax" data-v="x" class="${rotAxis === 'x' ? 'on' : ''}">Tip X</button><button data-a="rax" data-v="z" class="${rotAxis === 'z' ? 'on' : ''}">Tip Z</button></div>
+        <button class="chip" data-a="rot" data-v="-90">${icon('ccw')}90°</button>
+        <button class="chip" data-a="rot" data-v="${-aSnap}">${icon('ccw')}${aSnap}°</button>
+        <button class="chip" data-a="rot" data-v="${aSnap}">${icon('rotate')}${aSnap}°</button>
+        <button class="chip" data-a="rot" data-v="90">${icon('rotate')}90°</button>
+        <button class="chip" data-a="rot-custom">Angle…</button></div>`;
+      html += `<div class="row scroll"><button class="chip" data-a="floor">${icon('floor')}Drop to floor</button><button class="chip" data-a="dup">${icon('copy')}Duplicate</button><button class="chip danger" data-a="del-comp">${icon('trash')}Delete structure</button></div>`;
+      html += `<div class="hint">Drag a ring to rotate the whole structure (snaps to ${aSnap}°), or an arrow to move it. Tap a ring to turn it ${aSnap}°.</div>`;
     }
   } else {
     const p = model.pipes.find((q) => q.id === sel.id);
     if (!p) { el.classList.add('hidden'); return; }
     const A = byId.get(p.a), B = byId.get(p.b);
     const len = M.pipeLen(model, p, byId);
-    const ax = M.AXES[M.axisIndex(A, B)];
-    const dirTxt = ax === 'y' ? 'Vertical' : `Horizontal, along ${ax.toUpperCase()}`;
+    const pivId = pipePivotOf(p);
+    const pivN = byId.get(pivId), far = pivId === p.a ? B : A;
+    const th = M.tiltHeading(M.vsub(M.P(far), M.P(pivN)));
+    const ax = M.axisIndex(A, B);
+    const dirTxt = ax === 1 ? 'Vertical' : ax >= 0 ? `Horizontal, along ${'XYZ'[ax]}` : `Angled · ${Math.round(th.tilt)}° from vertical`;
+    const sw = M.swingSet(model, p.id, pivId);
+    const endName = Math.abs(A.y - B.y) > 1 ? (pivN.y > far.y ? 'top' : 'bottom') : (pivId === M.anchorEnd(model, p.id) ? 'anchored' : 'other');
     html += `<div class="ph"><div class="badge blue">${icon('pipe')}</div><div class="grow"><h3>Pipe · ${fmt(len)}</h3><p>${esc(dirTxt)} · ${esc(sizeLabel())}</p></div><button class="round" data-a="close" aria-label="Close">${icon('x')}</button></div>`;
     html += `<div class="row"><div class="len"><button class="chip" data-a="minus" aria-label="Shorter">−</button><input id="lenIn" type="text" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" value="${esc(fmt(len))}"><button class="chip" data-a="plus" aria-label="Longer">+</button></div></div>`;
-    html += `<div class="row scroll"><button class="chip" data-a="split-pipe">${icon('scissors')}Add joint in middle</button><button class="chip" data-a="struct">${icon('move')}Move structure</button><button class="chip danger" data-a="del-pipe">${icon('trash')}Delete pipe</button></div>`;
-    html += `<div class="hint">Drag the orange arrows to stretch. Lengths are center-to-center; the Parts list gives cut lengths.</div>`;
+    html += `<div class="row ang"><span class="lab">Tilt</span><input id="tiltIn" type="text" inputmode="decimal" enterkeyhint="done" value="${Math.round(th.tilt * 10) / 10}°">
+      <span class="lab">Heading</span><input id="headIn" type="text" inputmode="decimal" enterkeyhint="done" value="${th.vertical ? '—' : Math.round(th.heading * 10) / 10 + '°'}">
+      <button class="chip" data-a="pivot-swap">${icon('swap')}Pivot: ${endName} end</button></div>`;
+    html += `<div class="row scroll"><button class="chip" data-a="square">${icon('square')}Square up</button><button class="chip" data-a="split-pipe">${icon('scissors')}Add joint in middle</button><button class="chip" data-a="struct">${icon('move')}Move structure</button><button class="chip danger" data-a="del-pipe">${icon('trash')}Delete pipe</button></div>`;
+    html += `<div class="hint">${sw.loop
+      ? 'This pipe is part of a closed loop, so swinging it moves only its far end and the pipes joined there stretch to follow.'
+      : `Drag the rings at the pivot joint to swing this pipe${sw.ids.size > 1 ? ' and everything hanging off it (orange)' : ''}; the orange ring spins it around its own axis.`} Tilt is from straight up; heading 0° points along +X.</div>`;
   }
   el.innerHTML = html;
   el.classList.remove('hidden');
@@ -808,10 +1020,45 @@ function renderPanel() {
       const id = sel.id;
       edit((m) => M.setPipeLength(m, id, v, 1));
     };
-    inp.addEventListener('change', apply);
-    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
-    inp.addEventListener('focus', () => inp.select());
+    wireInput(inp, apply);
   }
+  const ti = $('tiltIn'), hi = $('headIn');
+  if (ti && hi) {
+    const apply = () => {
+      const p = model.pipes.find((q) => q.id === sel.id);
+      const byId2 = new Map(model.nodes.map((n) => [n.id, n]));
+      const pivId = pipePivotOf(p);
+      const far = byId2.get(pivId === p.a ? p.b : p.a);
+      const cur = M.tiltHeading(M.vsub(M.P(far), M.P(byId2.get(pivId))));
+      const t = parseFloat(ti.value), h = parseFloat(hi.value);
+      const tilt = Number.isFinite(t) ? t : cur.tilt;
+      const head = Number.isFinite(h) ? h : cur.heading;
+      if (tilt < 0 || tilt > 180) { toast('Tilt is 0° (straight up) to 180° (straight down)'); renderPanel(); return; }
+      if (Math.abs(tilt - cur.tilt) < 0.05 && (cur.vertical || Math.abs(head - cur.heading) < 0.05)) { renderPanel(); return; }
+      const id = p.id;
+      edit((m) => M.setPipeDir(m, id, pivId, M.dirFrom(tilt, head)));
+    };
+    wireInput(ti, apply);
+    wireInput(hi, apply);
+  }
+}
+function wireInput(inp, apply) {
+  inp.addEventListener('change', apply);
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+  inp.addEventListener('focus', () => inp.select());
+}
+
+function rotateStructure(degrees) {
+  const id = sel.id;
+  const n0 = model.nodes.find((n) => n.id === id);
+  const m = M.clone(model);
+  const comp = M.componentOf(m, id);
+  const piv = pivotMode === 'center' ? M.centerOf(m, comp) : M.P(n0);
+  const ax = WORLD_AXES[rotAxis];
+  const ang = M.rad(degrees);
+  M.rotateNodes(m, comp, piv, ax, ang);
+  sel = selectAfterRotate(m, { scope: 'struct', pivot: piv, axis: ax, origin: M.P(n0) }, ang);
+  commit(m);
 }
 
 $('panel').addEventListener('click', (e) => {
@@ -821,9 +1068,11 @@ $('panel').addEventListener('click', (e) => {
   const s = model.settings;
   const id = sel.id;
   switch (a) {
-    case 'close': select(null); break;
-    case 'mode-extend': mode = 'extend'; rebuild(); renderPanel(); break;
-    case 'mode-move': mode = 'move'; rebuild(); renderPanel(); break;
+    case 'close': setTool('select'); select(null); break;
+    case 'mode-extend': mode = 'extend'; setTool('select'); rebuild(); renderPanel(); break;
+    case 'mode-move': mode = 'move'; setTool('select'); rebuild(); renderPanel(); break;
+    case 'connect': setTool('connect'); break;
+    case 'connect-cancel': setTool('select'); renderPanel(); break;
     case 'len': edit((m) => { m.settings.defaultLen = Number(b.dataset.v); }); break;
     case 'len-custom': {
       const v = M.parseLen(prompt('Pipe length added when you tap an arrow:', fmt(s.defaultLen)), s.units);
@@ -832,7 +1081,7 @@ $('panel').addEventListener('click', (e) => {
     }
     case 'thru': {
       const k = lastCls.get(id);
-      const i = k.thruOptions.indexOf(k.thru);
+      const i = k.thruOptions.findIndex((v) => Math.abs(M.vdot(v, k.thru)) > PAR);
       const nx = k.thruOptions[(i + 1) % k.thruOptions.length];
       edit((m) => { m.nodes.find((n) => n.id === id).thru = nx; });
       break;
@@ -840,6 +1089,26 @@ $('panel').addEventListener('click', (e) => {
     case 'split': edit((m) => { const n = m.nodes.find((q) => q.id === id); if (n.split) delete n.split; else n.split = true; }); break;
     case 'merge': sel = null; edit((m) => M.mergeAt(m, id)); break;
     case 'del-node': case 'del-pipe': deleteSelection(); break;
+    case 'pivot-joint': pivotMode = 'joint'; rebuild(); renderPanel(); break;
+    case 'pivot-center': pivotMode = 'center'; rebuild(); renderPanel(); break;
+    case 'rax': rotAxis = b.dataset.v; renderPanel(); break;
+    case 'rot': rotateStructure(Number(b.dataset.v)); break;
+    case 'rot-custom': {
+      const v = parseFloat(prompt(`Rotate by how many degrees? (${rotAxis === 'y' ? 'spin, counter-clockwise seen from above' : `tip around ${rotAxis.toUpperCase()}`}; negative turns the other way)`, '30'));
+      if (Number.isFinite(v) && v !== 0) rotateStructure(v);
+      break;
+    }
+    case 'floor': {
+      const m = M.clone(model);
+      const n0 = model.nodes.find((n) => n.id === id);
+      const comp = M.componentOf(m, id);
+      const b0 = M.bounds(m, comp);
+      if (!M.dropToFloor(m, comp)) { toast('Already resting on the floor'); break; }
+      const nn = M.findNodeAt(m, n0.x, n0.y - b0.min[1], n0.z);
+      sel = nn ? { t: 'node', id: nn.id } : null;
+      commit(m);
+      break;
+    }
     case 'dup': {
       const m = M.clone(model);
       const nid = M.duplicateComponent(m, id, Math.max(300, s.snap * 4));
@@ -857,11 +1126,27 @@ $('panel').addEventListener('click', (e) => {
       edit((m) => M.setPipeLength(m, id, nx, 1));
       break;
     }
+    case 'pivot-swap': {
+      const p = model.pipes.find((q) => q.id === id);
+      pipePivot = pipePivotOf(p) === p.a ? p.b : p.a;
+      rebuild(); renderPanel();
+      break;
+    }
+    case 'square': {
+      const p = model.pipes.find((q) => q.id === id);
+      const pivId = pipePivotOf(p);
+      const byId2 = new Map(model.nodes.map((n) => [n.id, n]));
+      const d = M.pipeDir(byId2.get(pivId), byId2.get(pivId === p.a ? p.b : p.a));
+      const axes = Object.values(M.DIRS);
+      const best = axes.reduce((x, y) => (M.vdot(y, d) > M.vdot(x, d) ? y : x));
+      if (M.vdot(best, d) > 0.99999) { toast('Already square'); break; }
+      edit((m) => M.setPipeDir(m, id, pivId, best));
+      break;
+    }
     case 'split-pipe': {
       const m = M.clone(model);
       const nid = M.splitPipe(m, id, s.snap);
-      const n = m.nodes.find((q) => q.id === nid);
-      sel = n ? { t: 'node', id: nid } : null;
+      sel = nid != null ? { t: 'node', id: nid } : null;
       mode = 'extend';
       commit(m);
       break;
@@ -1044,6 +1329,7 @@ function openSettings() {
     <div class="field"><label>Units</label><div class="seg"><button data-units="in" class="${u === 'in' ? 'on' : ''}">inches</button><button data-units="mm" class="${u === 'mm' ? 'on' : ''}">mm</button></div></div>
     <div class="field"><label for="stSize">Kee Klamp size</label><select id="stSize">${sizeOpts}</select></div>
     <div class="field"><label for="stSnap">Snap to</label><select id="stSnap">${snaps.map((v) => `<option value="${v}" ${Math.abs(v - s.snap) < 0.01 ? 'selected' : ''}>${esc(M.fmtLen(v, u))}</option>`).join('')}</select></div>
+    <div class="field"><label for="stAng">Rotate in steps of</label><select id="stAng">${[1, 5, 10, 15, 22.5, 30, 45, 90].map((v) => `<option value="${v}" ${Math.abs(v - (s.angleSnap || 15)) < 0.01 ? 'selected' : ''}>${v}°</option>`).join('')}</select></div>
     <div class="field"><label for="stLen">Arrow tap adds</label><input id="stLen" type="text" value="${esc(M.fmtLen(s.defaultLen, u))}"></div>
   </div>
   <div class="sect">Fittings</div><div class="card">
@@ -1073,6 +1359,7 @@ function openSettings() {
   }));
   $('stSize').onchange = (e) => set((st) => { st.size = e.target.value; });
   $('stSnap').onchange = (e) => set((st) => { st.snap = Number(e.target.value); });
+  $('stAng').onchange = (e) => set((st) => { st.angleSnap = Number(e.target.value); });
   $('stFloor').onchange = (e) => set((st) => { st.floorEnd = e.target.value; });
   $('stCap').onchange = (e) => set((st) => { st.capEnds = e.target.checked; });
   $('stDed').onchange = (e) => set((st) => { st.deduct = e.target.checked; });
@@ -1298,9 +1585,11 @@ function openHelp() {
       <b>Building</b>
       <div class="muted" style="margin:4px 0 10px">Add a ready-made frame from <b>Shapes</b>, or tap <b>Pipe</b> and then tap the workplane to place a start point. Tap an arrow to add a pipe, or drag an arrow to choose the length. The new end is selected, so you can keep tapping arrows to draw.</div>
       <b>Editing</b>
-      <div class="muted" style="margin:4px 0 10px">Tap a pipe to type a length or drag its orange arrows. Tap a joint and switch to <b>Move</b> to slide a whole structure. With <b>Pipe</b> on, tapping an existing pipe adds a joint you can branch from.</div>
+      <div class="muted" style="margin:4px 0 10px">Tap a pipe to type a length or drag its orange arrows. With <b>Pipe</b> on, tapping an existing pipe adds a joint you can branch from. To add a brace at any angle, tap a joint, choose <b>Connect to…</b> and tap the other joint.</div>
+      <b>Rotating &amp; angles</b>
+      <div class="muted" style="margin:4px 0 10px">Tap a joint and switch to <b>Move &amp; rotate</b>. Drag the rings to turn the whole structure, or use the 90° and step buttons. Pick the pivot (this joint or the center), and use <b>Drop to floor</b> after tipping it over. To angle one pipe, tap it and drag the rings at its pivot joint, or type a Tilt and Heading. Anything hanging off that pipe swings with it. <b>Square up</b> snaps it back to the nearest right angle.</div>
       <b>Fittings &amp; parts</b>
-      <div class="muted" style="margin:4px 0 0">Wherever pipes meet, the matching Kee Klamp fitting is picked from how many pipes meet and at what angles. <b>Parts</b> lists fittings, cut lengths and how much stock pipe to buy. Tap the tag button to label every fitting and pipe.</div>
+      <div class="muted" style="margin:4px 0 0">Wherever pipes meet, the matching Kee Klamp fitting is picked from how many pipes meet and at what angles, including angle fittings (12, 29, 55, 86, 87, 89) and swivel sockets (C50, shown in brass) where no fixed fitting fits. <b>Parts</b> lists fittings, cut lengths and how much stock pipe to buy. Tap the tag button to label every fitting and pipe.</div>
     </div>
     <div class="sect">Fittings this app uses</div><div class="card">${legend}</div>
     <div class="muted" style="margin:12px 4px">Tip: in Safari tap Share → Add to Home Screen to use Klamp Studio full screen and offline.</div>`);
