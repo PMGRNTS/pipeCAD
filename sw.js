@@ -1,6 +1,6 @@
 // Offline support: app files are served from cache and refreshed in the background;
 // the versioned three.js files from the CDN are cached forever once loaded.
-const CACHE = 'klamp-studio-v2';
+const CACHE = 'klamp-studio-v3';
 const SHELL = [
   './', './index.html', './js/app.js', './js/model.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
@@ -10,6 +10,8 @@ const CDN = [
   'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/controls/OrbitControls.js',
   'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/environments/RoomEnvironment.js',
   'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/exporters/STLExporter.js',
+  'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/exporters/GLTFExporter.js',
+  'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/utils/BufferGeometryUtils.js',
 ];
 
 self.addEventListener('install', (e) => {

@@ -1,0 +1,19 @@
+; Engine configuration file.
+; Klamp Studio → Godot demo: lamp structures hanging from trolleys on ceiling rails.
+
+config_version=5
+
+[application]
+
+config/name="Klamp Rail Lamps Demo"
+run/main_scene="res://demo/facility_demo.tscn"
+config/features=PackedStringArray("4.4")
+
+[physics]
+
+3d/physics_engine="Jolt Physics"
+common/physics_ticks_per_second=120
+
+[rendering]
+
+anti_aliasing/quality/msaa_3d=2

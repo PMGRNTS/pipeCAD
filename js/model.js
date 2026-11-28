@@ -37,13 +37,15 @@ export function anyPerp(v) {
 }
 
 // Kee Klamp size codes → pipe outside diameter
+// Kee Klamp size codes → pipe outside diameter. kgm: galvanised tube mass per metre (EN 10255 medium,
+// approximate); fitKg: rough mass of a typical malleable-iron fitting. Used for the Godot physics export.
 export const SIZES = {
-  '4': { code: '4', nps: '1/2"', od: 21.3, odIn: '0.84"' },
-  '5': { code: '5', nps: '3/4"', od: 26.9, odIn: '1.05"' },
-  '6': { code: '6', nps: '1"', od: 33.7, odIn: '1.315"' },
-  '7': { code: '7', nps: '1-1/4"', od: 42.4, odIn: '1.66"' },
-  '8': { code: '8', nps: '1-1/2"', od: 48.3, odIn: '1.9"' },
-  '9': { code: '9', nps: '2"', od: 60.3, odIn: '2.375"' },
+  '4': { code: '4', nps: '1/2"', od: 21.3, odIn: '0.84"', kgm: 1.22, fitKg: 0.15 },
+  '5': { code: '5', nps: '3/4"', od: 26.9, odIn: '1.05"', kgm: 1.58, fitKg: 0.2 },
+  '6': { code: '6', nps: '1"', od: 33.7, odIn: '1.315"', kgm: 2.44, fitKg: 0.3 },
+  '7': { code: '7', nps: '1-1/4"', od: 42.4, odIn: '1.66"', kgm: 3.14, fitKg: 0.42 },
+  '8': { code: '8', nps: '1-1/2"', od: 48.3, odIn: '1.9"', kgm: 3.61, fitKg: 0.55 },
+  '9': { code: '9', nps: '2"', od: 60.3, odIn: '2.375"', kgm: 5.1, fitKg: 0.85 },
 };
 
 export const FITTINGS = {
@@ -889,4 +891,59 @@ export function validate(obj) {
   m.nextId = Math.max(1, ...m.nodes.map((n) => n.id + 1), ...m.pipes.map((p) => p.id + 1));
   normalize(m);
   return m;
+}
+
+// ---------- physics (game-engine export) ----------
+// Rough mass of the fitting at a joint, as a multiple of a 90° elbow.
+function fittingFactor(k) {
+  if (k.kind === 'flange') return 1.4;
+  if (k.kind === 'plug') return 0.25;
+  if (k.kind !== 'fitting') return 0;
+  const extra = (k.extras || []).reduce((t, e) => t + e.qty * 1.2, 0);
+  if (k.code === '14') return 0.8 + extra;
+  return 0.5 + 0.25 * k.n + extra;
+}
+
+// Mass, centre of mass and the simple shapes a physics engine needs. Units: mm and kg.
+// pipes: [{ id, a, b, len, kg }], joints: [{ id, at, kg, kind, code }].
+export function physicsData(m) {
+  const size = SIZES[m.settings.size] || SIZES['7'];
+  const { byId, cls } = classifyAll(m);
+  const pipes = [], joints = [];
+  let mass = 0;
+  const com = [0, 0, 0];
+  const addMass = (at, kg) => { mass += kg; for (let i = 0; i < 3; i++) com[i] += at[i] * kg; };
+  for (const p of m.pipes) {
+    const A = byId.get(p.a), B = byId.get(p.b);
+    const len = pipeLen(m, p, byId);
+    if (!(len > EPS)) continue;
+    const kg = (len / 1000) * size.kgm;
+    pipes.push({ id: p.id, a: P(A), b: P(B), len, kg });
+    addMass(vscale(vadd(P(A), P(B)), 0.5), kg);
+  }
+  for (const n of m.nodes) {
+    const k = cls.get(n.id);
+    const kg = fittingFactor(k) * size.fitKg;
+    if (k.kind === 'point') continue;
+    joints.push({ id: n.id, at: P(n), kg, kind: k.kind, code: k.code });
+    if (kg > 0) addMass(P(n), kg);
+  }
+  const center = mass > 0 ? vscale(com, 1 / mass) : [0, 0, 0];
+  return { size, pipes, joints, mass, center, od: size.od };
+}
+
+// Joints a sling could be hooked to: the outermost of the highest joints, one per diagonal
+// direction (so 4 for a rectangle, 2 for a bar, 1 for a single top joint).
+export function topJoints(m, tol = 1) {
+  const ys = m.nodes.map((n) => n.y);
+  if (!ys.length) return [];
+  const top = Math.max(...ys);
+  const tops = m.nodes.filter((n) => n.y > top - tol);
+  const picks = [];
+  for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    let best = null, bv = -Infinity;
+    for (const n of tops) { const v = n.x * sx + n.z * sz; if (v > bv) { bv = v; best = n; } }
+    if (best && !picks.includes(best)) picks.push(best);
+  }
+  return picks;
 }
