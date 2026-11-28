@@ -40,6 +40,7 @@ const ICONS = {
   ccw: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
   swap: '<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 20 4-4-4-4"/><path d="M21 16H7"/>',
   square: '<path d="M4 20V4M4 20h16"/><path d="M8 20v-4h-4"/>',
+  hang: '<path d="M12 2v7"/><path d="M5 9h14"/><path d="M5 9v7M19 9v7M5 16h14"/><circle cx="12" cy="2" r=".5"/>',
   floor: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M3 20h18"/>',
 };
 const icon = (n) => `<svg class="i" viewBox="0 0 24 24">${ICONS[n] || ''}</svg>`;
@@ -169,7 +170,7 @@ function part(group, geom, mat, pos, axis, sx, sy, sz, shadow = true) {
 }
 
 // ---------------------------------------------------------------- scene building
-function buildFitting(n, k, R, mat, isSel, hiMat) {
+function buildFitting(n, k, R, mat, isSel, hiMat, g = modelG) {
   const o = v3(n);
   const sr = R * 1.32, sl = R * 2.1, off = R * 0.35;
   const perpOf = (v) => {
@@ -178,16 +179,16 @@ function buildFitting(n, k, R, mat, isSel, hiMat) {
   };
   const screw = (at, v) => {
     const p = perpOf(v);
-    part(modelG, G.cylLo, mats.screw, at.clone().addScaledVector(p, sr * 0.97), p, R * 0.3, R * 0.42, R * 0.3);
+    part(g, G.cylLo, mats.screw, at.clone().addScaledVector(p, sr * 0.97), p, R * 0.3, R * 0.42, R * 0.3);
   };
   const socket = (vec, from = o) => {
     const v = tv(vec).normalize();
-    part(modelG, G.sleeve, mat, from.clone().addScaledVector(v, off + sl / 2), v, sr, sl, sr);
+    part(g, G.sleeve, mat, from.clone().addScaledVector(v, off + sl / 2), v, sr, sl, sr);
     screw(from.clone().addScaledVector(v, off + sl * 0.6), v);
   };
   const through = (vec, len) => {
     const v = tv(vec).normalize();
-    part(modelG, G.sleeve, mat, o, v, sr, len, sr);
+    part(g, G.sleeve, mat, o, v, sr, len, sr);
     screw(o.clone().addScaledVector(v, len * 0.3), v);
     screw(o.clone().addScaledVector(v, -len * 0.3), v);
   };
@@ -196,33 +197,33 @@ function buildFitting(n, k, R, mat, isSel, hiMat) {
   if (k.kind === 'fitting') {
     if (k.code === '14') { through(k.vecs[0], sl * 2.2); return; }
     const hubMat = isSel || hiMat ? mat : k.custom ? mats.swivel : mat;
-    part(modelG, G.sph, hubMat, o, null, sr * 1.12, sr * 1.12, sr * 1.12);
+    part(g, G.sph, hubMat, o, null, sr * 1.12, sr * 1.12, sr * 1.12);
     for (const vec of k.vecs) if (!isThru(vec)) socket(vec);
     if (k.thru) through(k.thru, (off + sl) * 2);
   } else if (k.kind === 'flange') {
     const t = R * 0.36;
-    part(modelG, G.cyl, mat, o.clone().add(new THREE.Vector3(0, t / 2, 0)), Yup, R * 3.1, t, R * 3.1);
+    part(g, G.cyl, mat, o.clone().add(new THREE.Vector3(0, t / 2, 0)), Yup, R * 3.1, t, R * 3.1);
     for (let i = 0; i < 4; i++) {
       const a = Math.PI / 4 + (i * Math.PI) / 2;
-      part(modelG, G.cylLo, mats.screw, o.clone().add(new THREE.Vector3(Math.cos(a) * R * 2.3, t + R * 0.02, Math.sin(a) * R * 2.3)), Yup, R * 0.32, R * 0.06, R * 0.32, false);
+      part(g, G.cylLo, mats.screw, o.clone().add(new THREE.Vector3(Math.cos(a) * R * 2.3, t + R * 0.02, Math.sin(a) * R * 2.3)), Yup, R * 0.32, R * 0.06, R * 0.32, false);
     }
     if (k.code === 'C58') {
       const knuckle = o.clone().add(new THREE.Vector3(0, t + sr * 0.7, 0));
-      part(modelG, G.sph, isSel ? mat : mats.swivel, knuckle, null, sr, sr, sr);
+      part(g, G.sph, isSel ? mat : mats.swivel, knuckle, null, sr, sr, sr);
       socket(k.vecs[0], knuckle);
     } else {
-      part(modelG, G.sleeve, mat, o.clone().add(new THREE.Vector3(0, t + sl / 2, 0)), Yup, sr, sl, sr);
+      part(g, G.sleeve, mat, o.clone().add(new THREE.Vector3(0, t + sl / 2, 0)), Yup, sr, sl, sr);
       screw(o.clone().add(new THREE.Vector3(0, t + sl * 0.6, 0)), Yup);
     }
   } else if (k.kind === 'plug') {
     const v = tv(k.vecs[0]).negate();
-    part(modelG, G.cyl, mats.plug, o.clone().addScaledVector(v, R * 0.1), v, R * 1.07, R * 0.22, R * 1.07);
-    part(modelG, G.sph, mats.plug, o.clone().addScaledVector(v, R * 0.2), v, R * 1.0, R * 0.32, R * 1.0);
+    part(g, G.cyl, mats.plug, o.clone().addScaledVector(v, R * 0.1), v, R * 1.07, R * 0.22, R * 1.07);
+    part(g, G.sph, mats.plug, o.clone().addScaledVector(v, R * 0.2), v, R * 1.0, R * 0.32, R * 1.0);
   } else if (k.kind === 'point') {
-    part(modelG, G.sph, isSel ? mats.fitSel : mats.point, o, null, R * 1.5, R * 1.5, R * 1.5);
+    part(g, G.sph, isSel ? mats.fitSel : mats.point, o, null, R * 1.5, R * 1.5, R * 1.5);
   }
   if (isSel && (k.kind === 'open' || k.kind === 'inline' || k.kind === 'point')) {
-    part(modelG, G.sph, mats.marker, o, null, R * 2.4, R * 2.4, R * 2.4, false);
+    part(g, G.sph, mats.marker, o, null, R * 2.4, R * 2.4, R * 2.4, false);
   }
 }
 
@@ -1501,6 +1502,7 @@ function openMenu() {
     ['import', 'open', 'Open design file'],
     ['png', 'camera', 'Save picture'],
     ['stl', 'cube', 'Export STL (3D model)'],
+    ['godot', 'hang', 'Export for Godot (.glb)'],
     ['clear', 'trash', 'Clear workplane'],
     ['help', 'help', 'How to use'],
   ];
@@ -1529,6 +1531,7 @@ async function menuAction(k) {
     return;
   }
   if (k === 'stl') { closeModal(); exportSTL(); return; }
+  if (k === 'godot') { openGodotExport(); return; }
   if (k === 'clear') {
     closeModal();
     if (!model.nodes.length) return;
@@ -1557,6 +1560,184 @@ async function exportSTL() {
     world.scale.setScalar(1); world.rotation.x = 0;
     toast('STL export needs a connection the first time');
   }
+}
+
+// ---------------------------------------------------------------- Godot (glTF) export
+// Writes a .glb for game engines: metres, Y up, origin at the point the structure hangs from.
+// Besides the merged visual mesh it carries what a physics engine needs:
+//   HangPoint, CenterOfMass, Attach_1..n  empty nodes (rope attachment points, centre of mass)
+//   Collision/CYL_* and Collision/SPH_*   empty nodes whose transform describes a cylinder
+//                                         (scale = radius, height, radius) or sphere (scale = radius)
+//   root extras "klamp"                   mass in kg, centre of mass, pipe size, bounds
+// godot/addons/klamp_lamp turns that into a RigidBody3D hanging from a rope on a ceiling rail.
+let godotHang = 'balance'; // 'balance' | 'joint'
+const FIT_TOP = 1.32 * 1.12; // fitting hub radius as a multiple of the pipe radius (see buildFitting)
+
+function godotHangPoint(m, phys, hang, nodeId) {
+  const R = phys.od / 2;
+  if (hang === 'joint') {
+    const n = m.nodes.find((q) => q.id === nodeId);
+    if (n) return [n.x, n.y + R * FIT_TOP, n.z];
+  }
+  const top = Math.max(...m.nodes.map((n) => n.y));
+  return [phys.center[0], top + R * FIT_TOP, phys.center[2]];
+}
+
+const r4 = (v) => Math.round(v * 1e4) / 1e4;
+const mm2m = (a, off) => [r4((a[0] - off[0]) * S), r4((a[1] - off[1]) * S), r4((a[2] - off[2]) * S)];
+
+async function buildGodotScene(m, hang, nodeId) {
+  const { mergeGeometries } = await import('three/addons/utils/BufferGeometryUtils.js');
+  const phys = M.physicsData(m);
+  const hp = godotHangPoint(m, phys, hang, nodeId);
+  const off = tv(hp).multiplyScalar(S);
+  const R = phys.od / 2 * S;
+  const { byId, cls } = M.classifyAll(m);
+
+  // Build the structure with plain materials (no selection colours, no lone points).
+  const tmp = new THREE.Group();
+  for (const p of m.pipes) {
+    const a = v3(byId.get(p.a)), b = v3(byId.get(p.b));
+    const len = a.distanceTo(b);
+    if (len <= 0) continue;
+    part(tmp, G.cyl, mats.pipe, a.clone().add(b).multiplyScalar(0.5), b.clone().sub(a).normalize(), R, len, R);
+  }
+  for (const n of m.nodes) {
+    const k = cls.get(n.id);
+    if (k.kind === 'point') continue;
+    buildFitting(n, k, R, mats.fit, false, false, tmp);
+  }
+
+  // Merge into one mesh with one surface per material: few draw calls in the game.
+  const names = new Map([[mats.pipe, 'Steel_Pipe'], [mats.fit, 'Fitting_Iron'], [mats.screw, 'Set_Screw'], [mats.swivel, 'Swivel_Brass'], [mats.plug, 'Plug']]);
+  const buckets = new Map();
+  for (const mesh of tmp.children) {
+    if (!names.has(mesh.material)) continue;
+    mesh.updateMatrix();
+    const g = mesh.geometry.clone().applyMatrix4(mesh.matrix);
+    g.translate(-off.x, -off.y, -off.z);
+    if (!buckets.has(mesh.material)) buckets.set(mesh.material, []);
+    buckets.get(mesh.material).push(g);
+  }
+  const outMats = [], perMat = [];
+  for (const [mat, list] of buckets) {
+    perMat.push(mergeGeometries(list, false));
+    const om = new THREE.MeshStandardMaterial({ color: mat.color, metalness: mat.metalness, roughness: mat.roughness });
+    om.name = names.get(mat);
+    outMats.push(om);
+    list.forEach((g) => g.dispose());
+  }
+  const geom = mergeGeometries(perMat, true);
+  perMat.forEach((g) => g.dispose());
+
+  const root = new THREE.Group();
+  root.name = safeName(m.name).replace(/-/g, '_') || 'Lamp';
+  const mesh = new THREE.Mesh(geom, outMats);
+  mesh.name = 'Structure';
+  geom.name = 'Structure';
+  root.add(mesh);
+
+  const marker = (name, posMm, parent = root) => {
+    const o = new THREE.Object3D();
+    o.name = name;
+    o.position.fromArray(mm2m(posMm, hp));
+    parent.add(o);
+    return o;
+  };
+  marker('HangPoint', hp);
+  marker('CenterOfMass', phys.center);
+  const attach = M.topJoints(m).map((n) => [n.x, n.y + phys.od / 2 * FIT_TOP, n.z]);
+  attach.forEach((a, i) => marker(`Attach_${i + 1}`, a));
+
+  // Collision helpers: transforms only, the Godot addon turns them into shapes.
+  const col = new THREE.Object3D();
+  col.name = 'Collision';
+  root.add(col);
+  const shape = (name, posMm, axis, sx, sy) => {
+    const o = marker(name, posMm, col);
+    if (axis) o.quaternion.setFromUnitVectors(Yup, axis);
+    o.scale.set(r4(sx), r4(sy), r4(sx));
+  };
+  for (const p of phys.pipes) {
+    const axis = tv(M.vsub(p.b, p.a)).normalize();
+    shape(`CYL_pipe_${p.id}`, M.vscale(M.vadd(p.a, p.b), 0.5), axis, R, p.len * S);
+  }
+  for (const j of phys.joints) {
+    if (j.kind === 'fitting') shape(`SPH_joint_${j.id}`, j.at, null, R * FIT_TOP, R * FIT_TOP);
+    else if (j.kind === 'flange') shape(`CYL_flange_${j.id}`, M.vadd(j.at, [0, phys.od * 0.09, 0]), Yup, R * 3.1, R * 0.36);
+  }
+
+  const b = M.bounds(m);
+  root.userData = {
+    klamp: {
+      format: 'klamp-godot', version: 1, name: m.name, units: 'm', up: '+Y',
+      mass_kg: Math.round(phys.mass * 100) / 100,
+      center_of_mass: mm2m(phys.center, hp),
+      hang: hang === 'joint' ? `joint ${nodeId}` : 'balance',
+      attach_points: attach.map((a) => mm2m(a, hp)),
+      pipe: { size: phys.size.code, nps: phys.size.nps, od_m: r4(phys.od * S), kg_per_m: phys.size.kgm },
+      pipe_count: phys.pipes.length,
+      pipe_length_m: r4(phys.pipes.reduce((t, p) => t + p.len, 0) * S),
+      bounds_min: mm2m(b.min, hp), bounds_max: mm2m(b.max, hp),
+    },
+  };
+  return { root, phys };
+}
+
+async function exportGodot(hang, nodeId) {
+  toast('Preparing .glb…');
+  try {
+    const { GLTFExporter } = await import('three/addons/exporters/GLTFExporter.js');
+    const { root } = await buildGodotScene(model, hang, nodeId);
+    const data = await new GLTFExporter().parseAsync(root, { binary: true });
+    root.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    shareFile(new Blob([data], { type: 'model/gltf-binary' }), `${safeName(model.name)}.glb`, model.name);
+  } catch (e) {
+    console.error(e);
+    toast('Godot export needs a connection the first time');
+  }
+}
+
+function openGodotExport() {
+  if (!model.pipes.length) { closeModal(); toast('Nothing to export yet'); return; }
+  const nodeId = sel?.t === 'node' && lastCls.get(sel.id)?.kind !== 'point' ? sel.id : null;
+  if (godotHang === 'joint' && !nodeId) godotHang = 'balance';
+  const phys = M.physicsData(model);
+  const b = M.bounds(model);
+  const dims = [0, 1, 2].map((i) => fmt(b.max[i] - b.min[i] + phys.od));
+  const kg = model.settings.units === 'in' ? `${(phys.mass * 2.2046).toFixed(1)} lb` : `${phys.mass.toFixed(1)} kg`;
+  openModal('Export for Godot', `
+    <div class="stats">
+      <div class="stat"><b>${kg}</b><small>est. weight</small></div>
+      <div class="stat"><b>${phys.pipes.length}</b><small>pipes</small></div>
+      <div class="stat"><b>${phys.joints.filter((j) => j.kind === 'fitting').length}</b><small>fittings</small></div>
+    </div>
+    <div class="muted" style="margin:8px 4px 0">${dims[0]} wide × ${dims[1]} tall × ${dims[2]} deep · ${esc(sizeLabel())}</div>
+    <div class="sect">Hang from</div>
+    <div class="card" style="padding:12px 14px">
+      <div class="seg" id="gHang">
+        <button data-h="balance" class="${godotHang === 'balance' ? 'on' : ''}">Balance point</button>
+        <button data-h="joint" class="${godotHang === 'joint' ? 'on' : ''}" ${nodeId ? '' : 'disabled style="opacity:.4"'}>Selected joint</button>
+      </div>
+      <div class="hint">${godotHang === 'balance'
+        ? 'The rope attaches on top, straight above the centre of mass, so it hangs level.'
+        : 'The rope attaches to the top of the selected joint. If that is off-centre the structure hangs tilted, like the real thing.'}
+        ${nodeId ? '' : ' To hang from a joint, close this, tap the joint, and export again.'}</div>
+    </div>
+    <div class="row"><button class="btn block" id="gGo">${icon('share')} Export .glb</button></div>
+    <div class="sect">In Godot</div>
+    <div class="card" style="padding:12px 14px"><div class="muted">
+      The file is in metres with Y up, and its origin is the hang point. It also contains the centre of mass,
+      top attachment points (<kbd>Attach_1</kbd>…), collision shapes and the weight.
+      Copy <kbd>godot/addons/klamp_lamp</kbd> from this project into your Godot 4 project, then put a
+      <b>KlampHanger</b> under a <b>RailTrolley</b> on a <b>CeilingRail</b> and set its lamp scene to this file.
+    </div></div>`);
+  $('gHang').querySelectorAll('[data-h]').forEach((el) => el.addEventListener('click', () => {
+    if (el.disabled) return;
+    godotHang = el.dataset.h;
+    openGodotExport();
+  }));
+  $('gGo').onclick = () => { closeModal(); exportGodot(godotHang, nodeId); };
 }
 
 $('fileIn').addEventListener('change', async (e) => {

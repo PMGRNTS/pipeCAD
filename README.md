@@ -34,6 +34,7 @@ A Tinkercad-style 3D designer for **Kee Klamp®-style pipe structures** (tables,
 - **Editing.** Type a pipe length (`36`, `36-1/2"`, `3' 6"`, `900mm`) or drag the stretch arrows; the rest of the structure stays square. You can also move or duplicate whole structures, add joints on existing pipes, choose which pipe passes through a cross, and undo or redo.
 - **Parts list.** It shows fitting counts with part numbers (for example `21-7`), estimated cut lengths, and how many stock lengths to buy (it packs the cuts onto sticks). You can share it as CSV or copy it as text.
 - **Designs are saved on the device** automatically, with a gallery. You can share or open `.klamp.json` design files, save a PNG picture, or export an STL.
+- **Export for Godot.** **⋯ → Export for Godot (.glb)** writes a game-ready model: metres, Y up, one mesh with named materials, and its origin at the point it hangs from (above the balance point, or a joint you pick). It also contains the estimated weight, centre of mass, sling points and collision shapes. The [`godot/`](godot/README.md) folder has a Godot 4 script library that turns that file into a rigid body on a physics rope, and runs it along ceiling rails on trolleys, plus a demo facility.
 - **Inches or millimetres**, with Kee Klamp sizes 4–9 (½" to 2" pipe).
 - **Installable and offline.** Add it to the Home Screen and it works without a connection after the first load.
 
@@ -44,6 +45,8 @@ A Tinkercad-style 3D designer for **Kee Klamp®-style pipe structures** (tables,
 3. In the repo go to **Settings → Pages**. Under **Build and deployment**, choose **Deploy from a branch**, pick `main` and `/ (root)`, then **Save**.
 4. After a minute the site is live at `https://<your-user>.github.io/klamp-studio/`.
 5. On your iPhone, open that link in Safari, tap **Share → Add to Home Screen**, and launch it from the icon to use it full screen.
+
+The `godot/` folder isn't needed on the website, so you can leave it out of the upload.
 
 There is no build step. All paths are relative, so the app works from a project subfolder. three.js is loaded from the jsDelivr CDN and cached by the service worker for offline use.
 
