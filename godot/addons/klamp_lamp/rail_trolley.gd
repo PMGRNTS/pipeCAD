@@ -197,7 +197,18 @@ func _place() -> void:
 	if r == null or not is_inside_tree() or not r.is_inside_tree() or r.get_length() <= 0.0:
 		return
 	var t := r.sample(progress)
-	global_transform = Transform3D(t.basis, t.origin + Vector3.DOWN * drop)
+	var xf := Transform3D(t.basis, t.origin + Vector3.DOWN * drop)
+	if Engine.is_in_physics_frame() or Engine.is_editor_hint():
+		global_transform = xf
+	else:
+		# Outside the physics step an AnimatableBody3D that syncs to physics keeps its old
+		# transform until the next step and then sweeps across as a move, dragging anything
+		# jointed to it. A placement from here is a teleport, so switch syncing off for it.
+		var sync := sync_to_physics
+		sync_to_physics = false
+		global_transform = xf
+		PhysicsServer3D.body_set_state(get_rid(), PhysicsServer3D.BODY_STATE_TRANSFORM, xf)
+		sync_to_physics = sync
 
 
 func _set_progress(v: float) -> void:

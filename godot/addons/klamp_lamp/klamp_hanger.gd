@@ -57,7 +57,26 @@ func _ready() -> void:
 	if Engine.is_editor_hint():
 		_update_preview()
 	elif spawn_on_ready:
-		spawn.call_deferred() # after parent trolleys have placed themselves
+		await _anchor_settled()
+		spawn()
+
+
+## Waits until the physics engine has the body we hang from where the scene has it. A trolley
+## placed in _ready() only gets there during the next physics step (Jolt moves kinematic bodies
+## rather than teleporting them), and a rope jointed to it before then is yanked across the level.
+func _anchor_settled() -> void:
+	var body: PhysicsBody3D = null
+	var n := get_parent()
+	while n != null and body == null:
+		body = n as PhysicsBody3D
+		n = n.get_parent()
+	for i in 10:
+		await get_tree().physics_frame
+		if body == null:
+			return
+		var server: Transform3D = PhysicsServer3D.body_get_state(body.get_rid(), PhysicsServer3D.BODY_STATE_TRANSFORM)
+		if i > 0 and server.origin.distance_to(body.global_position) < 0.001:
+			return
 
 
 ## Creates the lamp and its rope(s) hanging straight down from here. Calls despawn() first.
